@@ -15,14 +15,17 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, VirtAddr};
 use crate::sync::UPSafeCell;
+use crate::syscall::TaskInfoHelper;
+use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
-pub use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
+pub use task::{TaskControlBlock, TaskStatus};
 
 /// The task manager, where all the tasks are managed.
 ///
@@ -79,6 +82,9 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+        if let None = next_task.init_time {
+            next_task.init_time = Some(get_time_ms());
+        }
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -140,6 +146,10 @@ impl TaskManager {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
+
+            if let None = inner.tasks[next].init_time {
+                inner.tasks[next].init_time = Some(get_time_ms());
+            }
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
@@ -152,6 +162,66 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    /// update syscall times
+    fn update_syscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+
+        inner.tasks[current].syscall_times[syscall_id] += 1;
+    }
+
+    /// get current task info
+    fn get_current_task_info(&self) -> TaskInfoHelper {
+        let inner = self.inner.exclusive_access();
+        let current_task = &inner.tasks[inner.current_task];
+
+        (
+            current_task.task_status,
+            current_task.init_time,
+            current_task.syscall_times,
+        )
+    }
+
+    /// current task alloc memory
+    fn current_task_mmap_memory_on(&self, start: usize, len: usize, port: usize) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+
+        let mem_set = &mut inner.tasks[current].memory_set;
+
+        let start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len);
+
+        if !start_va.aligned()
+            || (port & !0x7 != 0)
+            || (port & 0x7 == 0)
+            || mem_set.have_mapped(start_va.floor(), end_va.ceil())
+        {
+            false
+        } else {
+            debug!("{:?}, {:?}", start_va.floor(), end_va.ceil());
+            mem_set.insert_framed_area(
+                start_va,
+                end_va,
+                MapPermission::from_bits((port << 1) as u8).unwrap() | MapPermission::U,
+            );
+            true
+        }
+    }
+
+    /// current task munmap memory
+    fn current_task_munmap_memory_on(&self, start: usize, len: usize) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+
+        let mem_set = &mut inner.tasks[current].memory_set;
+
+        let end_vpn = VirtAddr::from(start + len).ceil();
+        let start_va = VirtAddr::from(start);
+
+        start_va.aligned() && mem_set.munmap_memory(start_va.floor(), end_vpn)
     }
 }
 
@@ -201,4 +271,24 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// update current task syscall times array
+pub fn update_syscall_times(syscall_id: usize) {
+    TASK_MANAGER.update_syscall_times(syscall_id);
+}
+
+/// get task info
+pub fn get_current_task_info() -> TaskInfoHelper {
+    TASK_MANAGER.get_current_task_info()
+}
+
+/// ch4: sys_map, map curent task memory
+pub fn mmap_current_task_memory(start: usize, len: usize, port: usize) -> bool {
+    TASK_MANAGER.current_task_mmap_memory_on(start, len, port)
+}
+
+/// ch4
+pub fn munmap_current_task_memory(start: usize, len: usize) -> bool {
+    TASK_MANAGER.current_task_munmap_memory_on(start, len)
 }

@@ -262,6 +262,30 @@ impl MemorySet {
             false
         }
     }
+
+    /// check wether have mapped of the given vpn range in page table
+    pub fn have_mapped(&self, start: VirtPageNum, end: VirtPageNum) -> bool {
+        !(self
+            .areas
+            .iter()
+            .all(|area| end <= area.vpn_range.get_start() || start >= area.vpn_range.get_end()))
+    }
+
+    /// munmap
+    pub fn munmap_memory(&mut self, start: VirtPageNum, end: VirtPageNum) -> bool {
+        match self
+            .areas
+            .iter()
+            .position(|x| x.vpn_range.get_start() == start && x.vpn_range.get_end() == end)
+        {
+            Some(index) => {
+                self.areas[index].unmap(&mut self.page_table);
+                self.areas.remove(index);
+                true
+            }
+            None => false,
+        }
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
