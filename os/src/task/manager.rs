@@ -23,7 +23,27 @@ impl TaskManager {
     }
     /// Take a process out of the ready queue
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue.pop_front()
+        let index = self.ready_queue.iter().enumerate().min_by(|x, y| {
+            x.1.inner_exclusive_access()
+                .stride_dispatch
+                .stride
+                .cmp(&y.1.inner_exclusive_access().stride_dispatch.stride)
+        });
+
+        if let Some((i, _)) = index {
+            info!(
+                "Here is the minimalist stride task {:?}, app id is {}",
+                self.ready_queue[i].inner_exclusive_access().stride_dispatch,
+                self.ready_queue[i].pid.0
+            );
+            self.ready_queue[i]
+                .inner_exclusive_access()
+                .stride_dispatch
+                .inc_stride();
+            self.ready_queue.remove(i)
+        } else {
+            None
+        }
     }
 }
 
