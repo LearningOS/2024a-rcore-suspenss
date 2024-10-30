@@ -1,10 +1,11 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::{BIG_STRIDE, INIT_PRIORITY, INIT_STRIDE, TRAP_CONTEXT_BASE};
+use crate::config::{BIG_STRIDE, INIT_PRIORITY, INIT_STRIDE, MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::fs::{File, Stdin, Stdout};
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
+use crate::syscall::TaskInfoHelper;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
@@ -105,6 +106,12 @@ pub struct TaskControlBlockInner {
 
     /// Stride dispatch
     pub stride_dispatch: Stride,
+
+    /// Initial time
+    pub init_time: Option<usize>,
+
+    /// Syscall times
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
 }
 
 impl TaskControlBlockInner {
@@ -170,6 +177,8 @@ impl TaskControlBlock {
                     heap_bottom: user_sp,
                     program_brk: user_sp,
                     stride_dispatch: Stride::new(),
+                    init_time: None,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
         };
@@ -252,6 +261,8 @@ impl TaskControlBlock {
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
                     stride_dispatch: Stride::new(),
+                    init_time: None,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
         });
@@ -314,6 +325,8 @@ impl TaskControlBlock {
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
                     stride_dispatch: Stride::new(),
+                    init_time: None,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
         });
@@ -373,6 +386,51 @@ impl TaskControlBlock {
         self.inner_exclusive_access()
             .stride_dispatch
             .set_priority(priority);
+    }
+
+    /// update syscall times
+    pub fn update_syscall_times(&self, syscall_id: usize) {
+        self.inner_exclusive_access().syscall_times[syscall_id] += 1;
+    }
+
+    /// get current task info
+    pub fn get_task_info(&self) -> TaskInfoHelper {
+        let current_task = self.inner_exclusive_access();
+        (
+            current_task.task_status,
+            current_task.init_time,
+            current_task.syscall_times,
+        )
+    }
+
+    /// current task alloc memory
+    pub fn mmap_memory(&self, start: usize, len: usize, port: usize) -> bool {
+        let mem_set = &mut self.inner_exclusive_access().memory_set;
+        let start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len);
+        if !start_va.aligned()
+            || (port & !0x7 != 0)
+            || (port & 0x7 == 0)
+            || mem_set.have_mapped(start_va.floor(), end_va.ceil())
+        {
+            false
+        } else {
+            debug!("{:?}, {:?}", start_va.floor(), end_va.ceil());
+            mem_set.insert_framed_area(
+                start_va,
+                end_va,
+                MapPermission::from_bits((port << 1) as u8).unwrap() | MapPermission::U,
+            );
+            true
+        }
+    }
+
+    /// current task munmap memory
+    pub fn munmap_memory(&self, start: usize, len: usize) -> bool {
+        let mem_set = &mut self.inner_exclusive_access().memory_set;
+        let end_vpn = VirtAddr::from(start + len).ceil();
+        let start_va = VirtAddr::from(start);
+        start_va.aligned() && mem_set.munmap_memory(start_va.floor(), end_vpn)
     }
 }
 

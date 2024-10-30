@@ -31,11 +31,6 @@ impl TaskManager {
         });
 
         if let Some((i, _)) = index {
-            info!(
-                "Here is the minimalist stride task {:?}, app id is {}",
-                self.ready_queue[i].inner_exclusive_access().stride_dispatch,
-                self.ready_queue[i].pid.0
-            );
             self.ready_queue[i]
                 .inner_exclusive_access()
                 .stride_dispatch
