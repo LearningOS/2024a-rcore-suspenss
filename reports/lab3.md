@@ -1,24 +1,14 @@
-# lab2 
+# lab3 
 
-## 实现功能
-在获取 task_info time_val 的系统调用中，用一个函数，通过所给的物理地址来获得特定类型的结构体的可变引用。
+## Implementation
+Impleted the system call spawn which is create a new process and don't need to copy the parent memory set.
+Impleted the stride dispatch algorithm using traverse the Vecdeque to find the task has the minimalist stride value.
 
-在实现 mmap 和 munmap 时，通过控制 TASK_MANAGER 中 task control block 中的 memory set 来进行操作
-
-## 问答题
-1. 物理页号与标志位；标志位可以控制物理页帧的访问权限，以及是否被访问过，是否被修改过
-2. 
-  1. 缺页异常，段错误异常，页面置换
-  2. scause, stval 描述了异常的原因以及附加信息
-  3. 按需分配页面，可以缓解内存压力
-  4. 20M
-  5. 当用户申请空间时，不实际在页表中申请物理页帧，当实际需要使用时才按需申请
-  6. V 标志位 为 0
-3. 
-  1. 记录地址空间的 token
-  2. 页表项中 U 置 0 可以控制用户态无法访问
-  3. 当处理 Trap 时不需要切换地址空间
-  4. 处理 Trap 时
+## Question
+1.
+  1. No, P2 first, because of overflow of u8.
+  2. I don't know
+  
 
 ## 荣誉守则
 1. 在完成本次实验的过程(含此前学习的过程)中，我曾分别与以下各位就(与本次实验相关的)
