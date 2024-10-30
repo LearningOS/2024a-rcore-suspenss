@@ -1,7 +1,7 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{BIG_STRIDE, INIT_PRIORITY, INIT_STRIDE, TRAP_CONTEXT_BASE};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
@@ -33,6 +33,37 @@ impl TaskControlBlock {
     pub fn get_user_token(&self) -> usize {
         let inner = self.inner_exclusive_access();
         inner.memory_set.token()
+    }
+}
+
+#[derive(Debug)]
+pub struct Stride {
+    /// Process stride
+    pub stride: usize,
+
+    /// Process priroity
+    pub priority: usize,
+
+    /// Process pass
+    pub pass: usize,
+}
+
+impl Stride {
+    pub fn new() -> Self {
+        Stride {
+            stride: INIT_STRIDE,
+            priority: INIT_PRIORITY,
+            pass: BIG_STRIDE / INIT_PRIORITY,
+        }
+    }
+
+    pub fn inc_stride(&mut self) {
+        self.stride += self.pass
+    }
+
+    pub fn set_priority(&mut self, priority: usize) {
+        self.priority = priority;
+        self.pass = BIG_STRIDE / self.priority;
     }
 }
 
@@ -68,6 +99,9 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// Stride dispatch
+    pub stride_dispatch: Stride,
 }
 
 impl TaskControlBlockInner {
@@ -118,6 +152,7 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    stride_dispatch: Stride::new(),
                 })
             },
         };
@@ -191,6 +226,7 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    stride_dispatch: Stride::new(),
                 })
             },
         });
@@ -242,6 +278,7 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    stride_dispatch: Stride::new(),
                 })
             },
         });
@@ -293,6 +330,14 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// set priority for current process
+    pub fn set_priority(&self, priority: usize) {
+        info!("Here is priority {}", priority);
+        self.inner_exclusive_access()
+            .stride_dispatch
+            .set_priority(priority);
     }
 }
 
