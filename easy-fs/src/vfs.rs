@@ -150,6 +150,7 @@ impl Inode {
         };
 
         if let Some(old_inode_id) = self.read_disk_inode(op) {
+            log::info!("{old_inode_id}, {old_name}, {new_name} ");
             self.modify_disk_inode(|root_inode| {
                 // append file in the dirent
                 let file_count = (root_inode.size as usize) / DIRENT_SZ;
@@ -168,11 +169,14 @@ impl Inode {
             let (block_id, block_offset) = fs.get_disk_inode_pos(old_inode_id);
 
             // add link unmber to stat info
-            get_block_cache(block_id as usize, Arc::clone(&self.block_device))
+            let link_num = get_block_cache(block_id as usize, Arc::clone(&self.block_device))
                 .lock()
                 .modify(block_offset, |disk_inode: &mut DiskInode| {
                     disk_inode.add_link();
+                    disk_inode.get_link_num()
                 });
+
+            log::info!("link: {}", link_num);
 
             block_cache_sync_all();
 
@@ -187,6 +191,9 @@ impl Inode {
         let fs = self.fs.lock();
         let inode = self.read_disk_inode(|disk_inode| {
             self.find_inode_id(name, disk_inode).map(|inode_id| {
+                // Debug
+                log::info!("unlink :: inode_id is {} ", inode_id);
+
                 let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
                 Arc::new(Self::new(
                     block_id,
@@ -197,10 +204,39 @@ impl Inode {
             })
         });
 
+        drop(fs);
+
         if let Some(inode) = inode {
-            let link_num = self.modify_disk_inode(|disk_inode| {
+            let link_num = inode.modify_disk_inode(|disk_inode| {
+                log::info!("nlink num: {}", disk_inode.get_link_num());
+
                 disk_inode.remove_link();
                 disk_inode.get_link_num()
+            });
+
+            log::info!("unlink: {}", link_num);
+
+            self.modify_disk_inode(|root_inode| {
+                // append file in the dirent
+                let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                let mut dirent = DirEntry::empty();
+
+                let i = (0..file_count).find(|i| {
+                    assert_eq!(
+                        root_inode.read_at(
+                            DIRENT_SZ * i,
+                            dirent.as_bytes_mut(),
+                            &self.block_device,
+                        ),
+                        DIRENT_SZ,
+                    );
+                    dirent.name() == name
+                });
+                root_inode.write_at(
+                    i.unwrap() * DIRENT_SZ,
+                    DirEntry::empty().as_bytes(),
+                    &self.block_device,
+                );
             });
 
             if link_num == 0 {
