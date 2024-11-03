@@ -2,7 +2,7 @@
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::{BIG_STRIDE, INIT_PRIORITY, INIT_STRIDE, MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
-use crate::fs::{File, Stdin, Stdout};
+use crate::fs::{File, OSInode, Stdin, Stdout};
 use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::syscall::TaskInfoHelper;
@@ -98,6 +98,9 @@ pub struct TaskControlBlockInner {
     pub exit_code: i32,
     pub fd_table: Vec<Option<Arc<dyn File + Send + Sync>>>,
 
+    /// stats
+    pub stats: Vec<Option<Arc<OSInode>>>,
+
     /// Heap bottom
     pub heap_bottom: usize,
 
@@ -132,6 +135,7 @@ impl TaskControlBlockInner {
             fd
         } else {
             self.fd_table.push(None);
+            self.stats.push(None);
             self.fd_table.len() - 1
         }
     }
@@ -174,6 +178,7 @@ impl TaskControlBlock {
                         // 2 -> stderr
                         Some(Arc::new(Stdout)),
                     ],
+                    stats: vec![None; 3],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
                     stride_dispatch: Stride::new(),
@@ -258,6 +263,7 @@ impl TaskControlBlock {
                     children: Vec::new(),
                     exit_code: 0,
                     fd_table: new_fd_table,
+                    stats: parent_inner.stats.clone(),
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
                     stride_dispatch: Stride::new(),
@@ -318,6 +324,7 @@ impl TaskControlBlock {
 
                     fd_table: new_fd_table,
 
+                    stats: parent_inner.stats.clone(),
                     memory_set,
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),

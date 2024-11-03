@@ -138,6 +138,80 @@ impl Inode {
         )))
         // release efs lock automatically by compiler
     }
+
+    /// Create inode under current inode by name
+    pub fn link(&self, old_name: &str, new_name: &str) -> bool {
+        let mut fs = self.fs.lock();
+        let op = |root_inode: &DiskInode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.find_inode_id(old_name, root_inode)
+        };
+
+        if let Some(old_inode_id) = self.read_disk_inode(op) {
+            self.modify_disk_inode(|root_inode| {
+                // append file in the dirent
+                let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                let new_size = (file_count + 1) * DIRENT_SZ;
+                // increase size
+                self.increase_size(new_size as u32, root_inode, &mut fs);
+                // write dirent
+                let dirent = DirEntry::new(new_name, old_inode_id);
+                root_inode.write_at(
+                    file_count * DIRENT_SZ,
+                    dirent.as_bytes(),
+                    &self.block_device,
+                );
+            });
+
+            let (block_id, block_offset) = fs.get_disk_inode_pos(old_inode_id);
+
+            // add link unmber to stat info
+            get_block_cache(block_id as usize, Arc::clone(&self.block_device))
+                .lock()
+                .modify(block_offset, |disk_inode: &mut DiskInode| {
+                    disk_inode.add_link();
+                });
+
+            block_cache_sync_all();
+
+            true
+        } else {
+            false
+        }
+    }
+
+    /// unlink
+    pub fn unlink(&self, name: &str) -> bool {
+        let fs = self.fs.lock();
+        let inode = self.read_disk_inode(|disk_inode| {
+            self.find_inode_id(name, disk_inode).map(|inode_id| {
+                let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
+                Arc::new(Self::new(
+                    block_id,
+                    block_offset,
+                    self.fs.clone(),
+                    self.block_device.clone(),
+                ))
+            })
+        });
+
+        if let Some(inode) = inode {
+            let link_num = self.modify_disk_inode(|disk_inode| {
+                disk_inode.remove_link();
+                disk_inode.get_link_num()
+            });
+
+            if link_num == 0 {
+                inode.clear();
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     /// List inodes under current inode
     pub fn ls(&self) -> Vec<String> {
         let _fs = self.fs.lock();
@@ -182,5 +256,22 @@ impl Inode {
             }
         });
         block_cache_sync_all();
+    }
+
+    /// get inode id
+    pub fn get_inode_id(&self) -> u32 {
+        self.fs
+            .lock()
+            .get_inode_id(self.block_id, self.block_offset)
+    }
+
+    /// is dir?
+    pub fn is_dir(&self) -> bool {
+        self.read_disk_inode(|disk_inode| disk_inode.is_dir())
+    }
+
+    /// get link num
+    pub fn get_link_num(&self) -> u32 {
+        self.read_disk_inode(|disk_inode| disk_inode.get_link_num())
     }
 }

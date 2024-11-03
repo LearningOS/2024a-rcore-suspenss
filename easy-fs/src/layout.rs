@@ -6,7 +6,7 @@ use core::fmt::{Debug, Formatter, Result};
 /// Magic number for sanity check
 const EFS_MAGIC: u32 = 0x3b800001;
 /// The max number of direct inodes
-const INODE_DIRECT_COUNT: usize = 28;
+const INODE_DIRECT_COUNT: usize = 27;
 /// The max length of inode name
 const NAME_LENGTH_LIMIT: usize = 27;
 /// The max number of indirect1 inodes
@@ -86,6 +86,7 @@ pub struct DiskInode {
     pub indirect1: u32,
     pub indirect2: u32,
     type_: DiskInodeType,
+    ulink: u32,
 }
 
 impl DiskInode {
@@ -96,6 +97,7 @@ impl DiskInode {
         self.direct.iter_mut().for_each(|v| *v = 0);
         self.indirect1 = 0;
         self.indirect2 = 0;
+        self.ulink = 1;
         self.type_ = type_;
     }
     /// Whether this inode is a directory
@@ -388,6 +390,24 @@ impl DiskInode {
         write_size
     }
 }
+
+impl DiskInode {
+    /// update ulink
+    pub fn add_link(&mut self) {
+        self.ulink += 1;
+    }
+
+    /// unlink
+    pub fn remove_link(&mut self) {
+        self.ulink -= 1;
+    }
+
+    /// get link number
+    pub fn get_link_num(&self) -> u32 {
+        self.ulink
+    }
+}
+
 /// A directory entry
 #[repr(C)]
 pub struct DirEntry {

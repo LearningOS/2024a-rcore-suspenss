@@ -4,6 +4,10 @@ mod inode;
 mod stdio;
 
 use crate::mm::UserBuffer;
+use alloc::sync::Arc;
+
+pub use inode::{link_file, list_apps, open_file, unlink_file, OSInode, OpenFlags};
+pub use stdio::{Stdin, Stdout};
 
 /// trait File for all file types
 pub trait File: Send + Sync {
@@ -19,7 +23,7 @@ pub trait File: Send + Sync {
 
 /// The stat of a inode
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Stat {
     /// ID of device containing file
     pub dev: u64,
@@ -46,5 +50,20 @@ bitflags! {
     }
 }
 
-pub use inode::{list_apps, open_file, OSInode, OpenFlags};
-pub use stdio::{Stdin, Stdout};
+impl Stat {
+    /// get stat from osinode
+    pub fn get_stat_from(inode: Arc<OSInode>) -> Self {
+        inode.get_stat_info()
+    }
+    /*
+    /// new
+    pub fn new() -> Self {
+        Stat {
+            dev: 0,
+            ino: 100,
+            mode: StatMode::DIR,
+            nlink: 1,
+            pad: [0; 7],
+        }
+    } */
+}
