@@ -1,7 +1,8 @@
-use crate::sync::{Condvar, Mutex, MutexBlocking, MutexSpin, Semaphore};
+use crate::sync::{Condvar, DeadLockChecker, Mutex, MutexBlocking, MutexSpin, Semaphore};
 use crate::task::{block_current_and_run_next, current_process, current_task};
 use crate::timer::{add_timer, get_time_ms};
 use alloc::sync::Arc;
+
 /// sleep syscall
 pub fn sys_sleep(ms: usize) -> isize {
     trace!(
@@ -23,24 +24,33 @@ pub fn sys_sleep(ms: usize) -> isize {
 }
 /// mutex create syscall
 pub fn sys_mutex_create(blocking: bool) -> isize {
+    let tid = current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .res
+        .as_ref()
+        .unwrap()
+        .tid;
+
     trace!(
         "kernel:pid[{}] tid[{}] sys_mutex_create",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
+        tid
     );
+
     let process = current_process();
     let mutex: Option<Arc<dyn Mutex>> = if !blocking {
         Some(Arc::new(MutexSpin::new()))
     } else {
         Some(Arc::new(MutexBlocking::new()))
     };
+
     let mut process_inner = process.inner_exclusive_access();
+
+    if let Some(detector) = process_inner.dl_detector.as_mut() {
+        detector.mutex.add_resource(1);
+    }
+
     if let Some(id) = process_inner
         .mutex_list
         .iter()
@@ -57,40 +67,64 @@ pub fn sys_mutex_create(blocking: bool) -> isize {
 }
 /// mutex lock syscall
 pub fn sys_mutex_lock(mutex_id: usize) -> isize {
+    let tid = current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .res
+        .as_ref()
+        .unwrap()
+        .tid;
     trace!(
         "kernel:pid[{}] tid[{}] sys_mutex_lock",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
+        tid
     );
     let process = current_process();
-    let process_inner = process.inner_exclusive_access();
+    let mut process_inner = process.inner_exclusive_access();
+
+    if let Some(detector) = process_inner.dl_detector.as_mut().map(|x| &mut x.mutex) {
+        detector.need[tid][mutex_id] += 1;
+        if detector.detect() {
+            detector.need[tid][mutex_id] -= 1;
+            return -0xDEAD;
+        }
+    }
+
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
     drop(process_inner);
     drop(process);
     mutex.lock();
+
+    let process = current_process();
+    let mut process_inner = process.inner_exclusive_access();
+
+    if let Some(detector) = process_inner.dl_detector.as_mut().map(|x| &mut x.mutex) {
+        detector.alloc_res(tid, mutex_id);
+    }
+
     0
 }
 /// mutex unlock syscall
 pub fn sys_mutex_unlock(mutex_id: usize) -> isize {
+    let tid = current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .res
+        .as_ref()
+        .unwrap()
+        .tid;
     trace!(
         "kernel:pid[{}] tid[{}] sys_mutex_unlock",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
+        tid
     );
     let process = current_process();
-    let process_inner = process.inner_exclusive_access();
+    let mut process_inner = process.inner_exclusive_access();
+
+    if let Some(detector) = process_inner.dl_detector.as_mut().map(|x| &mut x.mutex) {
+        detector.release_res(tid, mutex_id);
+    }
+
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
     drop(process_inner);
     drop(process);
@@ -110,8 +144,14 @@ pub fn sys_semaphore_create(res_count: usize) -> isize {
             .unwrap()
             .tid
     );
+
     let process = current_process();
     let mut process_inner = process.inner_exclusive_access();
+
+    if let Some(detector) = process_inner.dl_detector.as_mut() {
+        detector.semaphore.add_resource(res_count);
+    }
+
     let id = if let Some(id) = process_inner
         .semaphore_list
         .iter()
@@ -131,19 +171,25 @@ pub fn sys_semaphore_create(res_count: usize) -> isize {
 }
 /// semaphore up syscall
 pub fn sys_semaphore_up(sem_id: usize) -> isize {
+    let tid = current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .res
+        .as_ref()
+        .unwrap()
+        .tid;
     trace!(
         "kernel:pid[{}] tid[{}] sys_semaphore_up",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
+        tid
     );
     let process = current_process();
-    let process_inner = process.inner_exclusive_access();
+    let mut process_inner = process.inner_exclusive_access();
+
+    if let Some(detector) = process_inner.dl_detector.as_mut() {
+        detector.semaphore.release_res(tid, sem_id);
+    }
+
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);
     sem.up();
@@ -151,22 +197,40 @@ pub fn sys_semaphore_up(sem_id: usize) -> isize {
 }
 /// semaphore down syscall
 pub fn sys_semaphore_down(sem_id: usize) -> isize {
+    let tid = current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .res
+        .as_ref()
+        .unwrap()
+        .tid;
     trace!(
         "kernel:pid[{}] tid[{}] sys_semaphore_down",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
+        tid
     );
     let process = current_process();
-    let process_inner = process.inner_exclusive_access();
+    let mut process_inner = process.inner_exclusive_access();
+
+    if let Some(detector) = process_inner.dl_detector.as_mut() {
+        detector.semaphore.need[tid][sem_id] += 1;
+        if detector.semaphore.detect() {
+            detector.semaphore.need[tid][sem_id] -= 1;
+            return -0xDEAD;
+        }
+    }
+
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);
     sem.down();
+
+    let process = current_process();
+    let mut process_inner = process.inner_exclusive_access();
+
+    if let Some(detector) = process_inner.dl_detector.as_mut() {
+        detector.semaphore.alloc_res(tid, sem_id);
+    }
+
     0
 }
 /// condvar create syscall
@@ -245,7 +309,12 @@ pub fn sys_condvar_wait(condvar_id: usize, mutex_id: usize) -> isize {
 /// enable deadlock detection syscall
 ///
 /// YOUR JOB: Implement deadlock detection, but might not all in this syscall
-pub fn sys_enable_deadlock_detect(_enabled: usize) -> isize {
+pub fn sys_enable_deadlock_detect(enabled: usize) -> isize {
     trace!("kernel: sys_enable_deadlock_detect NOT IMPLEMENTED");
-    -1
+
+    if enabled == 1 {
+        current_process().inner_exclusive_access().dl_detector = Some(DeadLockChecker::new())
+    }
+
+    0
 }
